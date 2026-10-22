@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# Secure Jarvis - Secrets & Local State
+# ---------------------------------------------------------------------------
+
+# Environment secrets (API keys) - NEVER COMMIT
+.env
+.env.*
+!.env.example
+
+# Local compliance audit database - NEVER COMMIT
+audit.db
+audit.db-journal
+audit.db-wal
+audit.db-shm
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Tooling / editor / OS
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+_envcheck.txt
