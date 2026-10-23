@@ -13,8 +13,7 @@ python-dotenv>=1.0.0
 
 # AI Inference Engine (System 1 semantic classifier)
 # Providers are used with automatic failover, OpenRouter/Jev first.
-# Primary: OpenRouter (TypeSafe Jev via chat completions)
-openai>=1.0.0
+# Primary: OpenRouter (TypeSafe Jev Decisions API; Python standard library HTTP)
 # Fallback: Groq
 groq>=0.11.0
 # Fallback: Google Gemini free tier (native structured output)

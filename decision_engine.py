@@ -33,6 +33,7 @@ import os
 import time
 from enum import Enum
 from typing import Any, Optional
+from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -356,13 +357,9 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 # to list the models your account can actually access.
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
-# OpenRouter Jev provider configuration. This project sends chat-completions
-# requests using this model as requested; see README for the endpoint compatibility
-# caveat documented for typesafe/jev-1.13.
+# OpenRouter Jev provider configuration.
 DEFAULT_OPENROUTER_MODEL = "typesafe/jev-1.13"
-
-# The OpenAI SDK appends /chat/completions to this base URL.
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 
 # Providers that speak the OpenAI chat-completions dialect.
 _OPENAI_COMPATIBLE = {"openrouter"}
@@ -376,9 +373,9 @@ class AIDecisionEngine:
 
     The engine performs two things:
 
-    1. **Semantic evaluation** - sends the operator command to Groq or
-       Gemini with a strict JSON schema contract and parses the result
-       into a validated :class:`Decision`.
+    1. **Semantic evaluation** - sends OpenRouter/Jev commands to the
+       Decisions API, or uses Groq/Gemini structured inference, then parses
+       the result into a validated :class:`Decision`.
     2. **Deterministic guardrail enforcement** - applies a policy overlay
        that is *not* delegated to the model. If the model's semantic
        guardrail category is anything other than ``NONE``, the verdict is
@@ -412,11 +409,14 @@ class AIDecisionEngine:
             self.api_key = key
             self.provider = resolved
 
-        self.model = model or self._default_model()
+        self.model = (
+            DEFAULT_OPENROUTER_MODEL
+            if self.provider == "openrouter"
+            else model or self._default_model()
+        )
 
         self._groq_client = None
         self._gemini_model = None
-        self._openai_client = None
         self._initialise_client()
 
     # -- setup -------------------------------------------------------------
@@ -446,21 +446,7 @@ class AIDecisionEngine:
             genai.configure(api_key=self.api_key)
             self._gemini_model = genai.GenerativeModel(self.model)
         elif self.provider == "openrouter":
-            try:
-                from openai import OpenAI
-            except Exception as exc:  # pragma: no cover
-                raise DecisionEngineError(
-                    "The openai SDK is not installed. Run: pip install -r requirements.txt"
-                ) from exc
-            self._openai_client = OpenAI(
-                base_url=OPENROUTER_BASE_URL,
-                api_key=self.api_key,
-                timeout=self.timeout,
-                default_headers={
-                    "HTTP-Referer": "https://github.com/secure-jarvis",
-                    "X-Title": "Secure Jarvis",
-                },
-            )
+            return
         else:
             try:
                 from groq import Groq
@@ -478,7 +464,7 @@ class AIDecisionEngine:
         if self.provider == "gemini":
             return self._gemini_model is not None
         if self.provider == "openrouter":
-            return self._openai_client is not None
+            return True
         return self._groq_client is not None
 
     def describe(self) -> str:
@@ -540,39 +526,88 @@ class AIDecisionEngine:
                     time.sleep(0.5 * (attempt + 1))
         raise DecisionEngineError(f"Gemini inference failed: {last_error}") from last_error
 
-    def _call_openrouter(self, user_prompt: str) -> str:
-        """Invoke OpenRouter's chat-completions endpoint with JSON response mode."""
-        assert self._openai_client is not None
+    def _call_openrouter(self, raw_command: str) -> str:
+        """Invoke TypeSafe Jev and adapt its typed answers to the decision schema."""
+        payload = {
+            "model": DEFAULT_OPENROUTER_MODEL,
+            "state": raw_command,
+            "questions": {
+                "intent": {
+                    "type": "choice",
+                    "instructions": "Categorize the command intent",
+                    "criteria": {
+                        "INFRASTRUCTURE_METRICS": (
+                            "Reading server, node, CPU, memory, or disk metrics"
+                        ),
+                        "STAGING_DEPLOYMENT": "Deploying code or services to staging",
+                        "DATABASE_QUERY": "Reading or querying database tables safely",
+                        "DESTRUCTIVE_OPS": (
+                            "Deleting, dropping, purging, or destroying data or systems"
+                        ),
+                    },
+                },
+                "risk_level": {
+                    "type": "choice",
+                    "instructions": "Evaluate the operational risk level",
+                    "criteria": {
+                        "SAFE": "Read-only operations with no state changes",
+                        "REQUIRES_APPROVAL": (
+                            "Non-destructive state changes requiring human approval"
+                        ),
+                        "CRITICAL": (
+                            "Destructive, unapproved, or data-wiping operations"
+                        ),
+                    },
+                },
+            },
+        }
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
-                response = self._openai_client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0.0,
-                    max_tokens=512,
-                    response_format={"type": "json_object"},
+                request = Request(
+                    OPENROUTER_DECISIONS_URL,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/secure-jarvis",
+                        "X-Title": "Secure Jarvis",
+                    },
+                    method="POST",
                 )
-                content = response.choices[0].message.content
-                if not content:
-                    raise DecisionEngineError("OpenRouter returned an empty completion.")
-                return content
+                with urlopen(request, timeout=self.timeout) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                answers = result["answers"]
+                intent = answers["intent"]["choice"]
+                risk_answer = answers["risk_level"]
+                risk_level = risk_answer["choice"]
+                confidence = float(risk_answer.get("confidence", 0.99))
+                adapted = {
+                    "intent": intent,
+                    "risk_level": risk_level,
+                    "guardrail_category": GuardrailCategory.NONE.value,
+                    "confidence": confidence,
+                    "reasoning": (
+                        "Evaluated by TypeSafe Jev System 1 with "
+                        f"{confidence * 100:.1f}% confidence."
+                    ),
+                }
+                return json.dumps(adapted)
             except Exception as exc:  # noqa: BLE001 - retry on any transport error
                 last_error = exc
                 if attempt < self.max_retries:
                     time.sleep(0.5 * (attempt + 1))
-        raise DecisionEngineError(f"OpenRouter inference failed: {last_error}") from last_error
+        raise DecisionEngineError(
+            f"OpenRouter Jev Decisions API failed: {last_error}"
+        ) from last_error
 
     def _infer_raw_json(self, raw_command: str) -> str:
         """Dispatch to the configured provider and return the raw JSON text."""
+        if self.provider == "openrouter":
+            return self._call_openrouter(raw_command)
         user_prompt = _build_user_prompt(raw_command)
         if self.provider == "gemini":
             return self._call_gemini(user_prompt)
-        if self.provider == "openrouter":
-            return self._call_openrouter(user_prompt)
         return self._call_groq(user_prompt)
 
 
@@ -735,7 +770,9 @@ class AIDecisionEngine:
             guardrail_category=guardrail,
             action=final_action,
             latency_ms=elapsed_ms,
-            provider=used_provider,
+            provider=(
+                "openrouter (jev)" if used_provider == "openrouter" else used_provider
+            ),
             model=used_model,
         )
 

@@ -175,10 +175,7 @@ def _build_metric_table(decision: Decision) -> Table:
         "Processing Latency",
         Text(f"{decision.latency_ms:.1f} ms", style="metric"),
     )
-    provider_label = (
-        "openrouter (jev)" if decision.provider == "openrouter" else decision.provider
-    )
-    table.add_row("Inference Provider", Text(provider_label, style="muted"))
+    table.add_row("Inference Provider", Text(decision.provider, style="muted"))
     table.add_row("Model", Text(decision.model, style="muted"))
     return table
 

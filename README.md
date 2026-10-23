@@ -146,7 +146,7 @@ secure-jarvis/
 | Terminal UI | `rich` | ≥13.0.0 | Colour-coded panels, badges, tables |
 | Data Modeling | `pydantic` | ≥2.0.0 | Typed decision schemas + validation |
 | Secrets | `python-dotenv` | ≥1.0.0 | Secure API key loading |
-| AI Inference | OpenRouter (`openai`) / `groq` / `google-generativeai` | ≥1.0.0 / ≥0.11.0 / ≥0.8.0 | Semantic classification (free tier) |
+| AI Inference | OpenRouter Decisions API / `groq` / `google-generativeai` | HTTP stdlib / ≥0.11.0 / ≥0.8.0 | Semantic classification (free tier) |
 | Audit Storage | `sqlite3` | stdlib | Local compliance event persistence |
 | Testing | `pytest` (or standalone runner) | ≥8.0.0 | Automated verification |
 
@@ -211,7 +211,7 @@ SECURE_JARVIS_PROVIDER=groq
 | Provider | Default model | Notes |
 |---|---|---|
 | Groq | `openai/gpt-oss-120b` | Free-tier model lineups rotate — list yours at `GET https://api.groq.com/openai/v1/models` |
-| OpenRouter | `typesafe/jev-1.13` | Uses `https://openrouter.ai/api/v1/chat/completions` through the OpenAI-compatible client. The project's prior integration note indicates this model may require `/api/alpha/decisions`; confirm live endpoint compatibility with your OpenRouter account. |
+| OpenRouter | `typesafe/jev-1.13` | Uses `https://openrouter.ai/api/alpha/decisions` with the Jev `state` and typed `questions` payload. |
 | Gemini | `gemini-2.0-flash` | Native JSON schema support |
 
 Override any model with `--model <id>`.

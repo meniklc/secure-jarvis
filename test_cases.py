@@ -36,8 +36,6 @@ from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import patch
 
-import httpx
-from openai import OpenAI
 from rich.console import Console
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -190,29 +188,33 @@ def test_staging_deployment_requires_approval() -> None:
 
 
 def test_openrouter_jev_resolves_and_executes_chat_completion() -> None:
-    """OpenRouter/Jev is preferred and executes the configured chat request."""
-    payload = _verdict_json("INFRASTRUCTURE_METRICS", "SAFE", "NONE", 0.97)
+    """OpenRouter/Jev sends a Decisions API request and parses typed answers."""
     request_details: dict[str, Any] = {}
 
-    def respond(request: httpx.Request) -> httpx.Response:
-        request_details["url"] = str(request.url)
-        request_details["body"] = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "id": "stub-completion",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "typesafe/jev-1.13",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": payload},
-                        "finish_reason": "stop",
+    class _StubResponse:
+        def __enter__(self) -> "_StubResponse":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "answers": {
+                        "intent": {"choice": "INFRASTRUCTURE_METRICS"},
+                        "risk_level": {"choice": "SAFE", "confidence": 0.876},
                     }
-                ],
-            },
-        )
+                }
+            ).encode("utf-8")
+
+    def respond(request: Any, timeout: float) -> _StubResponse:
+        request_details["url"] = request.full_url
+        request_details["method"] = request.method
+        request_details["body"] = json.loads(request.data)
+        request_details["authorization"] = request.get_header("Authorization")
+        request_details["timeout"] = timeout
+        return _StubResponse()
 
     with patch.dict(
         os.environ,
@@ -233,25 +235,24 @@ def test_openrouter_jev_resolves_and_executes_chat_completion() -> None:
         ("groq", "stub-groq-key"),
     ]
 
-    engine = AIDecisionEngine(provider=provider, api_key=api_key)
+    engine = AIDecisionEngine(provider=provider, api_key=api_key, model="ignored-override")
     assert engine.model == "typesafe/jev-1.13"
-    http_client = httpx.Client(transport=httpx.MockTransport(respond))
-    engine._openai_client = OpenAI(
-        api_key=api_key,
-        base_url=decision_engine.OPENROUTER_BASE_URL,
-        http_client=http_client,
-    )
-    try:
+    with patch("decision_engine.urlopen", side_effect=respond):
         decision = engine.evaluate("show cluster CPU metrics")
-    finally:
-        http_client.close()
     assert decision.action is DecisionStatus.APPROVED
-    assert decision.provider == "openrouter"
+    assert decision.provider == "openrouter (jev)"
     assert decision.model == "typesafe/jev-1.13"
-    assert request_details["url"] == (
-        "https://openrouter.ai/api/v1/chat/completions"
-    )
+    assert request_details["url"] == "https://openrouter.ai/api/alpha/decisions"
+    assert request_details["method"] == "POST"
+    assert request_details["authorization"] == "Bearer stub-openrouter-key"
+    assert request_details["timeout"] == engine.timeout
     assert request_details["body"]["model"] == "typesafe/jev-1.13"
+    assert request_details["body"]["state"] == "show cluster CPU metrics"
+    assert set(request_details["body"]["questions"]) == {"intent", "risk_level"}
+    assert decision.confidence == 0.876
+    assert decision.reasoning == (
+        "Evaluated by TypeSafe Jev System 1 with 87.6% confidence."
+    )
 
     from secure_jarvis import _build_metric_table
 
